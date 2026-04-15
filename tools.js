@@ -17,16 +17,15 @@ module.exports = [
   {
     name: 'get_app_screens',
     description:
-      'Get the screens for a specific Mobbin app by its slug. Returns screen thumbnails and links. Optionally filter by category (e.g. "onboarding", "settings", "checkout").',
+      'Get the screens for a specific Mobbin app. Pass the app_path returned by search_apps (e.g. "/apps/spotify-ios-UUID/UUID/screens"). Returns screen links you can pass to screenshot_url.',
     inputSchema: {
       type: 'object',
       properties: {
-        app_slug: { type: 'string', description: 'The app slug from search_apps (e.g. "spotify", "airbnb")' },
+        app_path: { type: 'string', description: 'The app_path from search_apps results (e.g. "/apps/spotify-ios-UUID/UUID/screens")' },
         platform: { type: 'string', enum: ['ios', 'android', 'web'], default: 'ios' },
-        category: { type: 'string', description: 'Optional category filter (e.g. "onboarding", "checkout")' },
         limit: { type: 'number', default: 30, description: 'Max number of screens to return' },
       },
-      required: ['app_slug'],
+      required: ['app_path'],
     },
   },
   {

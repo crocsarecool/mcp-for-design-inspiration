@@ -72,113 +72,107 @@ function truncate(str, max = 300) {
 
 // ─── Tool implementations ─────────────────────────────────────────────────────
 
+// App hrefs look like: /apps/spotify-ios-UUID/UUID/screens
+// Screen hrefs look like: /screens/UUID
+const APP_HREF_RE = /^\/apps\/[a-z0-9][a-z0-9-]*-(?:ios|android|web)-[a-f0-9-]+\/[a-f0-9-]+\/screens/;
+const SCREEN_HREF_RE = /^\/screens\/[a-f0-9-]{36}$/;
+
 async function searchApps({ query, platform = 'ios', limit = 20 }) {
   const page = await newPage();
   try {
-    const url = `${MOBBIN_BASE}/discover/apps/${platform}/latest?q=${encodeURIComponent(query)}`;
+    // Mobbin search endpoint for apps
+    const url = `${MOBBIN_BASE}/search/apps/${platform}?content_type=apps&sort=publishedAt&q=${encodeURIComponent(query)}`;
     await page.goto(url);
     await waitForContent(page);
 
-    // Grab app cards
-    const apps = await page.evaluate((lim) => {
-      const cards = Array.from(document.querySelectorAll('[data-testid="app-card"], a[href*="/apps/"]'));
+    const apps = await page.evaluate(({ lim, reStr }) => {
+      const re = new RegExp(reStr);
       const seen = new Set();
       const results = [];
 
-      for (const card of cards) {
+      for (const a of document.querySelectorAll('a[href]')) {
         if (results.length >= lim) break;
-        const href = card.getAttribute('href') || card.querySelector('a')?.getAttribute('href');
-        if (!href || !href.includes('/apps/')) continue;
-        const appSlug = href.split('/apps/')[1]?.split('/')[0];
-        if (!appSlug || seen.has(appSlug)) continue;
-        seen.add(appSlug);
+        const href = a.getAttribute('href');
+        if (!href || !re.test(href) || seen.has(href)) continue;
+        seen.add(href);
 
-        const name =
-          card.querySelector('h2, h3, [class*="name"], [class*="title"]')?.textContent?.trim() ||
-          card.getAttribute('aria-label') ||
-          appSlug;
-        const imgSrc = card.querySelector('img')?.getAttribute('src') || null;
+        // Walk up to find the card container (li or article)
+        const card = a.closest('li, article') || a;
+        const img = card.querySelector('img');
+        const nameEl = card.querySelector('h2, h3, p, span');
+        const name = img?.getAttribute('alt') || nameEl?.textContent?.trim() || href.split('/')[2];
 
-        results.push({ name, slug: appSlug, href, thumbnail: imgSrc });
+        results.push({
+          name,
+          // app_path is the full /apps/.../screens path — pass to get_app_screens
+          app_path: href,
+          url: 'https://mobbin.com' + href,
+          thumbnail: img?.src || null,
+        });
       }
       return results;
-    }, limit);
+    }, { lim: limit, reStr: APP_HREF_RE.source });
 
     return {
       query,
       platform,
       total_found: apps.length,
       apps,
-      hint: `Use get_app_screens with a slug to explore screens. E.g. get_app_screens({ app_slug: "${apps[0]?.slug}" })`,
+      hint: apps[0]
+        ? `Use get_app_screens with app_path. E.g. get_app_screens({ app_path: "${apps[0].app_path}" })`
+        : 'No apps found — try a different query',
     };
   } finally {
     await page.close();
   }
 }
 
-async function getAppScreens({ app_slug, platform = 'ios', category = null, limit = 30 }) {
+async function getAppScreens({ app_path, platform = 'ios', limit = 30 }) {
   const page = await newPage();
   try {
-    let url = `${MOBBIN_BASE}/apps/${app_slug}/${platform}/screens`;
-    if (category) url += `?category=${encodeURIComponent(category)}`;
+    // app_path is the full /apps/slug/uuid/screens path from search_apps
+    const url = app_path.startsWith('http') ? app_path : `${MOBBIN_BASE}${app_path}`;
     await page.goto(url);
     await waitForContent(page);
 
-    const result = await page.evaluate(({ lim }) => {
-      // App metadata
+    const result = await page.evaluate(({ lim, reStr }) => {
+      const re = new RegExp(reStr);
       const appName =
         document.querySelector('h1')?.textContent?.trim() ||
-        document.title.replace(' | Mobbin', '');
-
-      // Category filter options
-      const categoryLinks = Array.from(
-        document.querySelectorAll('[href*="category="], [data-testid*="category"]')
-      ).map((el) => ({
-        name: el.textContent?.trim(),
-        href: el.getAttribute('href'),
-      })).filter((c) => c.name);
-
-      // Screen cards
-      const screenEls = Array.from(
-        document.querySelectorAll(
-          '[data-testid="screen-card"], a[href*="/screens/"], [class*="screen"]'
-        )
-      );
+        document.title.replace(' | Mobbin', '').trim();
 
       const screens = [];
       const seen = new Set();
 
-      for (const el of screenEls) {
+      for (const a of document.querySelectorAll('a[href]')) {
         if (screens.length >= lim) break;
-        const anchor = el.tagName === 'A' ? el : el.querySelector('a[href*="/screens/"]');
-        const href = anchor?.getAttribute('href');
-        if (!href || !href.includes('/screens/')) continue;
-        if (seen.has(href)) continue;
+        const href = a.getAttribute('href');
+        if (!href || !re.test(href) || seen.has(href)) continue;
         seen.add(href);
 
-        const img = el.querySelector('img');
-        const label =
-          el.querySelector('[class*="title"], [class*="label"], [class*="name"]')?.textContent?.trim() ||
-          img?.getAttribute('alt') ||
-          href.split('/').pop();
+        const card = a.closest('li, article') || a;
+        const img = card.querySelector('img');
+        const label = img?.getAttribute('alt') || href.split('/').pop();
 
         screens.push({
           label,
           href: 'https://mobbin.com' + href,
-          thumbnail: img?.getAttribute('src') || null,
+          thumbnail: img?.src || null,
         });
       }
 
-      return { appName, categoryLinks: categoryLinks.slice(0, 20), screens };
-    }, { lim: limit });
+      return { appName, screens };
+    }, { lim: limit, reStr: SCREEN_HREF_RE.source });
 
     return {
       app: result.appName,
-      app_slug,
+      app_path,
       platform,
       screen_count: result.screens.length,
-      available_categories: result.categoryLinks,
       screens: result.screens,
+      hint: result.screens[0]
+        ? `Use screenshot_url to view a screen. E.g. screenshot_url({ url: "${result.screens[0].href}" })`
+        : 'No screens found',
     };
   } finally {
     await page.close();
@@ -188,45 +182,46 @@ async function getAppScreens({ app_slug, platform = 'ios', category = null, limi
 async function searchScreens({ query, platform = 'ios', limit = 30 }) {
   const page = await newPage();
   try {
-    const url = `${MOBBIN_BASE}/discover/screens/${platform}/latest?q=${encodeURIComponent(query)}`;
+    const url = `${MOBBIN_BASE}/search/apps/${platform}?content_type=screens&sort=publishedAt&q=${encodeURIComponent(query)}`;
     await page.goto(url);
     await waitForContent(page);
 
-    const screens = await page.evaluate((lim) => {
-      const els = Array.from(
-        document.querySelectorAll('a[href*="/screens/"]')
-      );
+    const screens = await page.evaluate(({ lim, reStr }) => {
+      const re = new RegExp(reStr);
       const seen = new Set();
       const results = [];
 
-      for (const el of els) {
+      for (const a of document.querySelectorAll('a[href]')) {
         if (results.length >= lim) break;
-        const href = el.getAttribute('href');
-        if (!href || seen.has(href)) continue;
+        const href = a.getAttribute('href');
+        if (!href || !re.test(href) || seen.has(href)) continue;
         seen.add(href);
 
-        const img = el.querySelector('img');
-        const label =
-          el.querySelector('[class*="title"], [class*="label"]')?.textContent?.trim() ||
-          img?.getAttribute('alt') ||
-          href.split('/').pop();
-        const appName = el.querySelector('[class*="app"]')?.textContent?.trim() || null;
+        const card = a.closest('li, article') || a;
+        const img = card.querySelector('img');
+        // Try to find app name from a sibling/parent app link
+        const appLink = card.querySelector('a[href*="/apps/"]');
+        const appName = appLink?.textContent?.trim() || img?.getAttribute('alt') || null;
+        const label = img?.getAttribute('alt') || href.split('/').pop();
 
         results.push({
           label,
           app: appName,
           href: 'https://mobbin.com' + href,
-          thumbnail: img?.getAttribute('src') || null,
+          thumbnail: img?.src || null,
         });
       }
       return results;
-    }, limit);
+    }, { lim: limit, reStr: SCREEN_HREF_RE.source });
 
     return {
       query,
       platform,
       total_found: screens.length,
       screens,
+      hint: screens[0]
+        ? `Use screenshot_url to view a screen. E.g. screenshot_url({ url: "${screens[0].href}" })`
+        : 'No screens found — try a different query',
     };
   } finally {
     await page.close();
